@@ -71,6 +71,7 @@
       <select id="modeSelect">
         <option value="study" selected>Học: chọn đáp án là hiện đúng/sai ngay</option>
         <option value="test">Thi: làm hết rồi mới nộp bài chấm điểm</option>
+        <option value="single">Ôn từng câu: chọn đúng mới qua câu sau</option>
       </select>
     </label>
     <label><input type="checkbox" id="shuffleOpts" checked> Đảo thứ tự các đáp án A, B, C, D</label>
@@ -81,6 +82,10 @@
     <h2 style="margin-bottom:4px">Thi thử</h2>
     <p class="muted" style="margin-top:0">Đề thi thử lấy 50 câu ngẫu nhiên từ tất cả các chương, làm trong 60 phút, câu hỏi và đáp án đều xào lại. Phải chọn đủ 50 câu mới được nộp bài và xem đáp án.</p>
     <button class="btn primary" id="mockBtn" type="button">Thi thử: 50 câu ngẫu nhiên tất cả chương</button>
+    <hr style="border:none;border-top:1px solid #e5dccb;margin:18px 0">
+    <h2 style="margin-bottom:4px">Ôn từng câu một</h2>
+    <p class="muted" style="margin-top:0">Chỉ hiện 1 câu tại một thời điểm. Chọn sai thì câu đó ở lại, đáp án sai bị gạch đi và bạn chọn lại đáp án khác. Chỉ khi chọn đúng mới tự động qua câu sau.</p>
+    <button class="btn primary" id="singleBtn" type="button">Ôn từng câu một →</button>
   </section>
 
   <section class="card hidden" id="quizBox">
@@ -119,6 +124,11 @@ let mode = "study";
 let isMock = false;
 let pendingMock = false;
 let mockLeft = 3600;
+let singleIdx = 0;
+let singleWrong = {};
+let singleTried = {};
+let singleFirst = 0;
+let singleLastCorrect = false;
 let current = [];
 let answers = {};
 let startTime = 0;
@@ -163,11 +173,14 @@ function start(){
     return {q:q.q, chapter:q.chapter, opts:order.map(i=>q.opts[i]), a:order.indexOf(q.a)};
   });
   answers = {}; submitted = false;
+  singleIdx = 0; singleWrong = {}; singleTried = {}; singleFirst = 0; singleLastCorrect = false;
   document.getElementById("setup").classList.add("hidden");
   document.getElementById("resultBox").classList.add("hidden");
   document.getElementById("quizBox").classList.remove("hidden");
+  document.getElementById("submitBtn").style.display = mode==="single" ? "none" : "";
   document.getElementById("quizTitle").textContent =
     isMock ? "Thi thử - 50 câu ngẫu nhiên tất cả chương (60 phút)" :
+    mode==="single" ? "Ôn từng câu một - chọn đúng mới qua câu sau" :
     DATA[chapter] ? "Chương "+chapter : "Tất cả các chương";
   render();
   startTime = Date.now();
@@ -190,12 +203,15 @@ function start(){
 function render(){
   const box = document.getElementById("questions");
   box.innerHTML = "";
-  current.forEach((q,qi)=>{
+  const singleActive = mode==="single" && !submitted;
+  const indices = singleActive ? [singleIdx] : current.map((_,i)=>i);
+  indices.forEach(qi=>{
+    const q = current[qi];
     const div = document.createElement("div");
     div.className = "q";
     div.dataset.index = qi;
     let tag = "";
-    const revealed = submitted || (mode==="study" && answers[qi]!==undefined);
+    const revealed = submitted || (mode==="study" && answers[qi]!==undefined) || (singleActive && singleLastCorrect);
     if(revealed){
       const ok = answers[qi]===q.a;
       tag = ok ? '<span class="tag ok">✓ Đúng</span>' : '<span class="tag">✗ Sai</span>';
@@ -207,24 +223,75 @@ function render(){
       b.type = "button";
       b.className = "opt";
       if(answers[qi]===oi) b.classList.add("selected");
+      const wrongHere = singleActive && (singleWrong[qi]||[]).includes(oi);
+      if(wrongHere) b.classList.add("wrong");
       if(revealed){
         b.disabled = true;
         if(oi===q.a) b.classList.add("correct");
         if(answers[qi]===oi && oi!==q.a) b.classList.add("wrong");
+      } else if(wrongHere){
+        b.disabled = true;
       }
       b.innerHTML = "<strong>"+LETTERS[oi]+".</strong> "+opt;
-      b.addEventListener("click",()=>{ if(submitted) return; if(mode==="study" && answers[qi]!==undefined) return; answers[qi]=oi; render(); });
+      b.addEventListener("click",()=>{
+        if(submitted) return;
+        if(mode==="single"){
+          if(singleLastCorrect) return;
+          if((singleWrong[qi]||[]).includes(oi)) return;
+          const first = !singleTried[qi];
+          singleTried[qi] = true;
+          if(oi===q.a){
+            if(first) singleFirst++;
+            answers[qi]=oi; singleLastCorrect=true; render();
+            setTimeout(()=>{
+              singleLastCorrect=false;
+              if(singleIdx+1>=current.length){ finishSingle(); }
+              else { singleIdx++; render(); }
+            },900);
+          } else {
+            if(!singleWrong[qi]) singleWrong[qi]=[];
+            singleWrong[qi].push(oi);
+            render();
+          }
+          return;
+        }
+        if(mode==="study" && answers[qi]!==undefined) return;
+        answers[qi]=oi; render();
+      });
       div.appendChild(b);
     });
+    if(singleActive && (singleWrong[qi]||[]).length){
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent = "Chưa đúng, thử đáp án khác nhé. Đáp án đúng vẫn chưa hiện, cứ suy nghĩ lại rồi chọn tiếp.";
+      div.appendChild(p);
+    }
     box.appendChild(div);
   });
-  const done = Object.keys(answers).length;
-  document.getElementById("progressBar").style.width = (current.length ? done/current.length*100 : 0)+"%";
-  document.getElementById("progressText").textContent = "Đã trả lời: "+done+"/"+current.length+" câu";
-  document.getElementById("unansweredNote").textContent = isMock
-    ? (done<current.length ? "Thi thử: còn "+(current.length-done)+" câu chưa chọn, phải chọn đủ mới được nộp bài." : "Đã chọn đủ, bấm nộp bài để xem đáp án.")
-    : (done<current.length ? "Còn "+(current.length-done)+" câu chưa trả lời." : "Đã trả lời đủ, bấm nộp bài nhé.");
+  if(singleActive){
+    document.getElementById("progressBar").style.width = (current.length ? singleIdx/current.length*100 : 0)+"%";
+    document.getElementById("progressText").textContent = "Đang ôn: câu "+(singleIdx+1)+"/"+current.length+" - đã qua: "+singleIdx+" câu";
+    document.getElementById("unansweredNote").textContent = singleLastCorrect ? "Đúng rồi, đang qua câu sau..." : "Chọn đúng mới qua câu sau. Chọn sai không bị trừ điểm, chỉ ở lại câu đó.";
+  } else {
+    const done = Object.keys(answers).length;
+    document.getElementById("progressBar").style.width = (current.length ? done/current.length*100 : 0)+"%";
+    document.getElementById("progressText").textContent = "Đã trả lời: "+done+"/"+current.length+" câu";
+    document.getElementById("unansweredNote").textContent = isMock
+      ? (done<current.length ? "Thi thử: còn "+(current.length-done)+" câu chưa chọn, phải chọn đủ mới được nộp bài." : "Đã chọn đủ, bấm nộp bài để xem đáp án.")
+      : (done<current.length ? "Còn "+(current.length-done)+" câu chưa trả lời." : "Đã trả lời đủ, bấm nộp bài nhé.");
+  }
   document.getElementById("submitBtn").disabled = submitted;
+}
+function finishSingle(){
+  if(submitted) return;
+  submitted = true;
+  clearInterval(timerId);
+  const right = singleFirst;
+  const pct = current.length ? Math.round(right/current.length*100) : 0;
+  document.getElementById("scoreText").textContent = right+"/"+current.length+" câu đúng ngay lần đầu ("+pct+"%)";
+  document.getElementById("scoreMsg").textContent = "Bạn đã ôn hết đề theo kiểu từng câu một. Điểm này tính theo lần chọn đầu tiên, còn phần xem lại bên dưới hiện đáp án đúng của từng câu để bạn đối chiếu.";
+  document.getElementById("resultBox").classList.remove("hidden");
+  render();
 }
 function submit(force){
   if(submitted) return;
@@ -257,6 +324,12 @@ function backToSetup(){
   window.scrollTo({top:0,behavior:"smooth"});
 }
 document.getElementById("startBtn").addEventListener("click",start);
+document.getElementById("singleBtn").addEventListener("click",()=>{
+  document.getElementById("modeSelect").value = "single";
+  document.getElementById("shuffleQs").checked = true;
+  document.getElementById("shuffleOpts").checked = true;
+  start();
+});
 document.getElementById("mockBtn").addEventListener("click",()=>{
   chapter = "both";
   document.querySelectorAll("#chapterChoices button").forEach(x=>x.classList.toggle("active", x.dataset.chapter==="both"));
